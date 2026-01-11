@@ -66,7 +66,8 @@ class RDTorrent:
     progress: float
     bytes: int
     seeders: Optional[int] = None
-    
+    added: Optional[str] = None  # ISO datetime string when torrent was added
+
     @classmethod
     def from_dict(cls, data: dict) -> "RDTorrent":
         return cls(
@@ -77,6 +78,7 @@ class RDTorrent:
             progress=data.get("progress", 0),
             bytes=data.get("bytes", 0),
             seeders=data.get("seeders"),
+            added=data.get("added"),
         )
     
     @property

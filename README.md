@@ -11,6 +11,7 @@ TRC is an automated companion service for [Riven](https://github.com/rivenmedia/
 - **Manual Scraping Fallback**: After max retries, manually scrapes for torrents and adds to Real-Debrid
 - **RD Download Monitoring**: Monitors Real-Debrid downloads and triggers Riven to pick up cached content
 - **Smart Torrent Handling**: Properly waits for RD magnet conversion, handles dead/stalled torrents immediately
+- **Automatic RD Cleanup**: Periodically scans RD for stuck/orphaned torrents and cleans them up
 - **Rate Limiting**: Respects API rate limits for both Riven and Real-Debrid
 - **State Persistence**: Saves state to disk so progress survives restarts
 
@@ -94,6 +95,8 @@ All configuration is done via environment variables:
 | `RETRY_INTERVAL_MINUTES` | `10` | Minimum time between retry attempts for same item |
 | `RD_CHECK_INTERVAL_MINUTES` | `5` | How often to check RD torrent status |
 | `RD_MAX_WAIT_HOURS` | `2` | Max time to wait for RD download before considering stalled |
+| `RD_CLEANUP_INTERVAL_HOURS` | `1` | How often to run RD cleanup check |
+| `RD_STUCK_TORRENT_HOURS` | `24` | Consider a torrent stuck if active for this long with <5% progress |
 | `MAX_RIVEN_RETRIES` | `3` | Number of Riven retries before falling back to manual scrape |
 | `SKIP_RIVEN_RETRY` | `false` | Skip remove+add retry and go directly to manual RD scraping |
 | `SKIP_RD_VALIDATION` | `false` | Skip Real-Debrid API validation on startup (for testing) |

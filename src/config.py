@@ -27,6 +27,8 @@ class Config:
     retry_interval_minutes: float = field(default_factory=lambda: float(os.getenv("RETRY_INTERVAL_MINUTES", "10")))
     rd_check_interval_minutes: float = field(default_factory=lambda: float(os.getenv("RD_CHECK_INTERVAL_MINUTES", "5")))
     rd_max_wait_hours: float = field(default_factory=lambda: float(os.getenv("RD_MAX_WAIT_HOURS", "2")))
+    rd_cleanup_interval_hours: float = field(default_factory=lambda: float(os.getenv("RD_CLEANUP_INTERVAL_HOURS", "1")))
+    rd_stuck_torrent_hours: float = field(default_factory=lambda: float(os.getenv("RD_STUCK_TORRENT_HOURS", "24")))
     
     # Retry Configuration
     max_riven_retries: int = field(default_factory=lambda: int(os.getenv("MAX_RIVEN_RETRIES", "3")))
@@ -65,7 +67,15 @@ class Config:
     @property
     def rd_max_wait_seconds(self) -> float:
         return self.rd_max_wait_hours * 3600
-    
+
+    @property
+    def rd_cleanup_interval_seconds(self) -> float:
+        return self.rd_cleanup_interval_hours * 3600
+
+    @property
+    def rd_stuck_torrent_seconds(self) -> float:
+        return self.rd_stuck_torrent_hours * 3600
+
     def validate(self) -> bool:
         """Validate required configuration."""
         if not self.riven_api_key:

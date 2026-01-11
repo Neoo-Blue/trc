@@ -209,6 +209,7 @@ class TRCMonitor:
         self._tasks = [
             asyncio.create_task(self._main_check_loop()),
             asyncio.create_task(self._rd_monitor_loop()),
+            asyncio.create_task(self._rd_cleanup_loop()),
         ]
 
         try:
@@ -273,7 +274,99 @@ class TRCMonitor:
 
             if await self._interruptible_sleep(self.config.rd_check_interval_seconds):
                 break  # Shutdown requested
-    
+
+    async def _rd_cleanup_loop(self):
+        """Periodically check and clean up stuck/orphaned torrents in RD."""
+        while self._running:
+            try:
+                await self._cleanup_rd_torrents()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error(f"Error in RD cleanup loop: {e}", exc_info=True)
+
+            if await self._interruptible_sleep(self.config.rd_cleanup_interval_seconds):
+                break  # Shutdown requested
+
+    async def _cleanup_rd_torrents(self):
+        """Check all RD torrents and clean up stuck/dead ones."""
+        logger.info("Running RD torrent cleanup check...")
+
+        try:
+            # Get active count info
+            active_info = await self.rd.get_active_count()
+            active_count = active_info.get("nb", 0)
+            active_limit = active_info.get("limit", 0)
+            logger.info(f"RD active torrents: {active_count}/{active_limit}")
+
+            # Get all torrents from RD
+            all_torrents = await self.rd.get_torrents(limit=100)
+            logger.info(f"Total torrents in RD: {len(all_torrents)}")
+
+            # Track which torrent IDs we're monitoring
+            tracked_ids = set(self.rd_downloads.keys())
+
+            cleaned_count = 0
+            now = datetime.now()
+
+            for torrent in all_torrents:
+                should_delete = False
+                reason = ""
+
+                # Check if torrent is dead/failed
+                if torrent.is_failed:
+                    should_delete = True
+                    reason = f"failed ({torrent.status})"
+                elif torrent.is_stalled:
+                    should_delete = True
+                    reason = "dead/no seeders"
+                elif torrent.is_waiting_selection:
+                    # Orphaned - waiting for file selection but not tracked
+                    if torrent.id not in tracked_ids:
+                        # Check if it's old enough to be considered orphaned
+                        if torrent.added:
+                            try:
+                                added_time = datetime.fromisoformat(torrent.added.replace('Z', '+00:00'))
+                                # Make comparison timezone-naive
+                                if added_time.tzinfo:
+                                    added_time = added_time.replace(tzinfo=None)
+                                age_seconds = (now - added_time).total_seconds()
+                                if age_seconds > 3600:  # Orphaned for > 1 hour
+                                    should_delete = True
+                                    reason = "orphaned (waiting selection > 1h)"
+                            except (ValueError, TypeError) as e:
+                                logger.debug(f"Could not parse added time for {torrent.id}: {e}")
+                elif torrent.is_active and torrent.progress < 5:
+                    # Check for stuck torrents (active but no progress for too long)
+                    if torrent.id not in tracked_ids and torrent.added:
+                        try:
+                            added_time = datetime.fromisoformat(torrent.added.replace('Z', '+00:00'))
+                            if added_time.tzinfo:
+                                added_time = added_time.replace(tzinfo=None)
+                            age_seconds = (now - added_time).total_seconds()
+                            if age_seconds > self.config.rd_stuck_torrent_seconds:
+                                should_delete = True
+                                reason = f"stuck (active {age_seconds/3600:.1f}h with {torrent.progress}% progress)"
+                        except (ValueError, TypeError) as e:
+                            logger.debug(f"Could not parse added time for {torrent.id}: {e}")
+
+                if should_delete:
+                    logger.warning(f"Cleaning up torrent {torrent.id}: {reason} - {torrent.filename[:50] if torrent.filename else 'unknown'}")
+                    await self.rd.delete_torrent(torrent.id)
+                    # Also remove from our tracking if present
+                    if torrent.id in self.rd_downloads:
+                        del self.rd_downloads[torrent.id]
+                        self.state.remove_rd_download(torrent.id)
+                    cleaned_count += 1
+
+            if cleaned_count > 0:
+                logger.info(f"Cleaned up {cleaned_count} stuck/orphaned torrents from RD")
+            else:
+                logger.debug("No stuck torrents found")
+
+        except Exception as e:
+            logger.error(f"Error during RD cleanup: {e}", exc_info=True)
+
     async def _check_problem_items(self):
         """Check for and handle problem items."""
         logger.info("Checking for problem items in Riven...")
