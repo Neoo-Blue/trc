@@ -41,7 +41,7 @@ TRC is available as a Docker image from Docker Hub: `arrrrrr/trc:latest`
        container_name: trc
        restart: unless-stopped
        volumes:
-         - ./trc_state.json:/app/trc_state.json
+         - ./trc_data:/app/data
        environment:
          - RIVEN_URL=http://your-riven-ip:8080
          - RIVEN_API_KEY=your_riven_api_key
@@ -110,12 +110,12 @@ docker-compose logs -f trc
 
 ## State Persistence
 
-TRC saves its state to `trc_state.json` in the working directory. This includes:
+TRC saves its state to `data/trc_state.json` (or `/app/data/trc_state.json` in Docker). This includes:
 - Item trackers (retry counts, manual scrape progress)
 - Active RD downloads being monitored
 - Processed items (to avoid re-processing)
 
-To reset all state, stop TRC and delete `trc_state.json`.
+To reset all state, stop TRC and delete the state file from the data directory.
 
 ## Troubleshooting
 

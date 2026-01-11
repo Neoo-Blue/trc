@@ -10,10 +10,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY src/ ./src/
 
-# Create non-root user
-RUN useradd -m -u 1000 trc && chown -R trc:trc /app
-USER trc
-
 # Run the application
 CMD ["python", "-m", "src.main"]
 

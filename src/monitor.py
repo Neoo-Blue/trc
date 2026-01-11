@@ -433,7 +433,6 @@ class TRCMonitor:
 
         try:
             streams = await self.riven.scrape_item(
-                item_id=item.id,
                 tmdb_id=item.tmdb_id,
                 tvdb_id=item.tvdb_id,
                 imdb_id=item.imdb_id,

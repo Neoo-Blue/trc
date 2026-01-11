@@ -176,13 +176,21 @@ class RivenClient:
         streams = result.get("streams", [])
         return [Stream.from_dict(s) for s in streams]
 
-    async def scrape_item(self, item_id: Optional[str] = None, tmdb_id: Optional[str] = None,
+    async def scrape_item(self, tmdb_id: Optional[str] = None,
                           tvdb_id: Optional[str] = None, imdb_id: Optional[str] = None,
                           media_type: str = "movie") -> Dict[str, Stream]:
-        """Manually scrape an item for streams."""
-        params = {"media_type": media_type}
-        if item_id:
-            params["item_id"] = item_id
+        """Manually scrape an item for streams.
+
+        Args:
+            tmdb_id: TMDB ID for the item
+            tvdb_id: TVDB ID for the item
+            imdb_id: IMDB ID for the item
+            media_type: Either "movie" or "tv" (not "show")
+        """
+        # Riven API expects "movie" or "tv", not "show"
+        api_media_type = "tv" if media_type in ("show", "tv") else "movie"
+        params = {"media_type": api_media_type}
+
         if tmdb_id:
             params["tmdb_id"] = tmdb_id
         if tvdb_id:

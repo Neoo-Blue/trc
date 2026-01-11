@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_STATE_FILE = "trc_state.json"
+DEFAULT_STATE_FILE = "data/trc_state.json"
 
 
 class StateManager:
@@ -22,16 +22,38 @@ class StateManager:
             "rd_downloads": {},
             "processed_items": [],
         }
-    
+        self._ensure_state_file()
+
+    def _ensure_state_file(self):
+        """Ensure state file path is a file, not a directory."""
+        if self.state_file.exists() and self.state_file.is_dir():
+            # Can't delete mounted directories, use a file inside instead
+            logger.warning(f"State path {self.state_file} is a directory, using file inside it")
+            self.state_file = self.state_file / "state.json"
+
+        if not self.state_file.exists():
+            # Ensure parent directory exists
+            self.state_file.parent.mkdir(parents=True, exist_ok=True)
+            # Create empty state file
+            with open(self.state_file, "w") as f:
+                json.dump(self._state, f)
+            logger.info(f"Created new state file at {self.state_file}")
+
     def load(self) -> bool:
         """Load state from disk. Returns True if successful."""
+        self._ensure_state_file()
+
         if not self.state_file.exists():
             logger.info(f"No state file found at {self.state_file}, starting fresh")
             return False
-        
+
         try:
             with open(self.state_file, "r") as f:
-                self._state = json.load(f)
+                content = f.read().strip()
+                if not content:
+                    logger.info(f"Empty state file at {self.state_file}, starting fresh")
+                    return False
+                self._state = json.loads(content)
             logger.info(f"Loaded state from {self.state_file}")
             return True
         except Exception as e:
