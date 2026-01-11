@@ -25,13 +25,23 @@ class TorrentStatus(Enum):
     VIRUS = "virus"
     COMPRESSING = "compressing"
     UPLOADING = "uploading"
-    DEAD = "dead"
-    
+    DEAD = "dead"  # Stalled/dead torrent - no seeders
+
     @classmethod
     def is_failed(cls, status: str) -> bool:
-        """Check if status indicates failure."""
-        return status in [cls.MAGNET_ERROR.value, cls.ERROR.value, cls.VIRUS.value, cls.DEAD.value]
-    
+        """Check if status indicates failure (immediate - should try next torrent)."""
+        return status in [cls.MAGNET_ERROR.value, cls.ERROR.value, cls.VIRUS.value]
+
+    @classmethod
+    def is_stalled(cls, status: str) -> bool:
+        """Check if torrent is stalled/dead (no seeders)."""
+        return status == cls.DEAD.value
+
+    @classmethod
+    def is_waiting_selection(cls, status: str) -> bool:
+        """Check if torrent is waiting for file selection."""
+        return status == cls.WAITING_FILES_SELECTION.value
+
     @classmethod
     def is_active(cls, status: str) -> bool:
         """Check if torrent is actively processing."""
@@ -39,7 +49,7 @@ class TorrentStatus(Enum):
             cls.MAGNET_CONVERSION.value, cls.QUEUED.value, cls.DOWNLOADING.value,
             cls.COMPRESSING.value, cls.UPLOADING.value
         ]
-    
+
     @classmethod
     def is_complete(cls, status: str) -> bool:
         """Check if torrent is complete."""
@@ -72,11 +82,19 @@ class RDTorrent:
     @property
     def is_failed(self) -> bool:
         return TorrentStatus.is_failed(self.status)
-    
+
+    @property
+    def is_stalled(self) -> bool:
+        return TorrentStatus.is_stalled(self.status)
+
+    @property
+    def is_waiting_selection(self) -> bool:
+        return TorrentStatus.is_waiting_selection(self.status)
+
     @property
     def is_active(self) -> bool:
         return TorrentStatus.is_active(self.status)
-    
+
     @property
     def is_complete(self) -> bool:
         return TorrentStatus.is_complete(self.status)

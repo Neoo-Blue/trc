@@ -10,6 +10,7 @@ TRC is an automated companion service for [Riven](https://github.com/rivenmedia/
 - **Release Date Awareness**: Skips unreleased content that naturally can't be found
 - **Manual Scraping Fallback**: After max retries, manually scrapes for torrents and adds to Real-Debrid
 - **RD Download Monitoring**: Monitors Real-Debrid downloads and triggers Riven to pick up cached content
+- **Smart Torrent Handling**: Properly waits for RD magnet conversion, handles dead/stalled torrents immediately
 - **Rate Limiting**: Respects API rate limits for both Riven and Real-Debrid
 - **State Persistence**: Saves state to disk so progress survives restarts
 
@@ -23,7 +24,9 @@ TRC is an automated companion service for [Riven](https://github.com/rivenmedia/
 3. **Manual Scrape Phase**: After max retries (default 3), TRC:
    - Uses Riven's scrape API to find torrent streams
    - Adds top-ranked torrents to Real-Debrid (max 3 concurrent)
+   - Waits for RD to convert magnet before selecting files
    - Monitors downloads until complete
+   - Immediately moves to next torrent if current one is dead (no seeders)
 4. **Completion**: When RD download completes, TRC removes and re-adds the item to Riven so it picks up the now-cached content
 
 ## Installation
@@ -126,7 +129,8 @@ To reset all state, stop TRC and delete the state file from the data directory.
 
 ### RD downloads timing out
 - Increase `RD_MAX_WAIT_HOURS` for slow torrents
-- Some torrents may have no seeders - TRC will try the next one
+- Dead torrents (no seeders) are now detected immediately and TRC moves to the next one
+- Stalled torrents with <10% progress after timeout will also be skipped
 
 ### Rate limiting errors
 - Increase `RD_RATE_LIMIT_SECONDS` (default 5s is conservative)

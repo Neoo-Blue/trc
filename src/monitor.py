@@ -462,6 +462,41 @@ class TRCMonitor:
             self.processed_items.add(item.id)
             self.state.add_processed_item(item.id)
 
+    async def _wait_for_file_selection(self, torrent_id: str, max_wait: int = 30) -> bool:
+        """Wait for torrent to be ready for file selection.
+
+        After adding a magnet, RD goes through magnet_conversion before
+        reaching waiting_files_selection. We need to wait for that state.
+
+        Returns True if ready for selection, False if failed/timeout.
+        """
+        for _ in range(max_wait // 2):  # Check every 2 seconds
+            try:
+                torrent = await self.rd.get_torrent_info(torrent_id)
+
+                if torrent.is_waiting_selection:
+                    return True
+                elif torrent.is_failed or torrent.is_stalled:
+                    logger.warning(f"Torrent {torrent_id} failed during magnet conversion: {torrent.status}")
+                    return False
+                elif torrent.is_complete:
+                    # Already cached! No need to select files
+                    logger.info(f"Torrent {torrent_id} is already cached on RD")
+                    return True
+                elif torrent.is_active:
+                    # Already downloading (files were auto-selected or cached)
+                    return True
+
+                # Still in magnet_conversion, wait
+                await asyncio.sleep(2)
+
+            except Exception as e:
+                logger.error(f"Error checking torrent {torrent_id} status: {e}")
+                return False
+
+        logger.warning(f"Timeout waiting for torrent {torrent_id} to be ready for file selection")
+        return False
+
     async def _add_streams_to_rd(self, tracker: ItemTracker):
         """Add streams to Real-Debrid (max 3 active globally at a time)."""
         # Check TOTAL active downloads across all items (global limit of 3)
@@ -485,23 +520,28 @@ class TRCMonitor:
                 torrent_id = result.get("id")
 
                 if torrent_id:
-                    # Wait for RD to process magnet, then select files
-                    await asyncio.sleep(2)
-                    await self.rd.select_files(torrent_id, "all")
+                    # Wait for RD to finish magnet conversion before selecting files
+                    if await self._wait_for_file_selection(torrent_id):
+                        # Select all files to start download
+                        await self.rd.select_files(torrent_id, "all")
 
-                    # Create download tracker
-                    download = RDDownloadTracker(
-                        torrent_id=torrent_id,
-                        infohash=stream.infohash,
-                        item_tracker=tracker,
-                        stream_index=tracker.stream_index,
-                    )
-                    self.rd_downloads[torrent_id] = download
-                    # Persist the new download
-                    self.state.set_rd_download(torrent_id, download.to_dict())
+                        # Create download tracker
+                        download = RDDownloadTracker(
+                            torrent_id=torrent_id,
+                            infohash=stream.infohash,
+                            item_tracker=tracker,
+                            stream_index=tracker.stream_index,
+                        )
+                        self.rd_downloads[torrent_id] = download
+                        # Persist the new download
+                        self.state.set_rd_download(torrent_id, download.to_dict())
 
-                    logger.info(f"Added torrent {torrent_id} to RD monitoring (active: {len(self.rd_downloads)}/{self.config.max_active_rd_downloads})")
-                    total_active = len(self.rd_downloads)
+                        logger.info(f"Added torrent {torrent_id} to RD monitoring (active: {len(self.rd_downloads)}/{self.config.max_active_rd_downloads})")
+                        total_active = len(self.rd_downloads)
+                    else:
+                        # Failed during magnet conversion, delete and try next
+                        logger.warning(f"Torrent {torrent_id} failed during setup, trying next stream")
+                        await self.rd.delete_torrent(torrent_id)
 
             except Exception as e:
                 logger.error(f"Failed to add torrent to RD: {e}")
@@ -548,20 +588,28 @@ class TRCMonitor:
                     logger.info(f"Re-added {item.display_name} to Riven to pick up cached content")
 
                 elif torrent.is_failed:
+                    # Immediate failure (magnet_error, error, virus)
                     logger.warning(f"✗ Torrent failed ({torrent.status}): {torrent.filename[:50]}")
+                    await self.rd.delete_torrent(torrent_id)
+                    to_remove.append(torrent_id)
+                    trackers_to_refill.append(download.item_tracker)
+
+                elif torrent.is_stalled:
+                    # Dead torrent - no seeders available, try next immediately
+                    logger.warning(f"✗ Torrent dead/no seeders ({torrent.status}): {torrent.filename[:50]}")
                     await self.rd.delete_torrent(torrent_id)
                     to_remove.append(torrent_id)
                     trackers_to_refill.append(download.item_tracker)
 
                 elif elapsed > self.config.rd_max_wait_seconds:
                     if torrent.is_active and torrent.progress < 10:
-                        # Stalled - delete and try next
+                        # Stalled - very slow progress, delete and try next
                         logger.warning(f"⚠ Torrent stalled (progress={torrent.progress}%): {torrent.filename[:50]}")
                         await self.rd.delete_torrent(torrent_id)
                         to_remove.append(torrent_id)
                         trackers_to_refill.append(download.item_tracker)
                     elif torrent.is_active:
-                        # Still downloading, extend wait time
+                        # Still downloading with progress, let it continue
                         logger.info(f"↓ Still downloading ({torrent.progress}%): {torrent.filename[:50]}")
                 else:
                     logger.debug(f"⏳ Waiting ({torrent.status}, {torrent.progress}%): {torrent.filename[:50]}")
