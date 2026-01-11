@@ -43,7 +43,7 @@ TRC is available as a Docker image from Docker Hub: `arrrrrr/trc:latest`
        volumes:
          - ./trc_state.json:/app/trc_state.json
        environment:
-         - RIVEN_URL=http://your-riven-ip:8083
+         - RIVEN_URL=http://your-riven-ip:8080
          - RIVEN_API_KEY=your_riven_api_key
          - RD_API_KEY=your_real_debrid_api_key
          # Optional - see full list of variables below
