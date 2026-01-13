@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from .config import Config
 from .riven_client import RivenClient, MediaItem, Stream
-from .rd_client import RealDebridClient, RDTorrent
+from .rd_client import RealDebridClient, RDTorrent, ContentInfringementError
 from .persistence import StateManager
 
 logger = logging.getLogger(__name__)
@@ -142,6 +142,9 @@ class TRCMonitor:
         self.rd_downloads: Dict[str, RDDownloadTracker] = {}  # torrent_id -> tracker
         self.processed_items: Set[str] = set()  # Items we've already tried manual scrape on
 
+        # Round-robin index for fairly distributing stream adds across trackers
+        self._rr_index = 0
+
         self._running = False
         self._shutdown_event = asyncio.Event()
         self._tasks: List[asyncio.Task] = []
@@ -252,6 +255,8 @@ class TRCMonitor:
         while self._running:
             try:
                 await self._check_problem_items()
+                # After checking items, ensure RD slots are filled
+                await self._fill_rd_slots()
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -267,6 +272,8 @@ class TRCMonitor:
         while self._running:
             try:
                 await self._monitor_rd_downloads()
+                # After monitoring, try to fill any empty slots
+                await self._fill_rd_slots()
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -639,70 +646,114 @@ class TRCMonitor:
         logger.warning(f"Timeout waiting for torrent {torrent_id} to be ready for file selection")
         return False
 
-    async def _add_streams_to_rd(self, tracker: ItemTracker):
-        """Add streams to Real-Debrid (max 3 active globally at a time)."""
-        # Check TOTAL active downloads across all items (global limit of 3)
-        total_active = len(self.rd_downloads)
+    async def _fill_rd_slots(self):
+        """Fill up RD download slots from all trackers that have pending streams.
 
-        if total_active >= self.config.max_active_rd_downloads:
-            logger.debug(f"Already at max active RD downloads ({total_active}/{self.config.max_active_rd_downloads})")
+        This ensures we always have up to MAX_ACTIVE_RD_DOWNLOADS running,
+        pulling from different items in round-robin fashion.
+        """
+        total_active = len(self.rd_downloads)
+        max_active = self.config.max_active_rd_downloads
+
+        if total_active >= max_active:
+            logger.debug(f"Already at max active RD downloads ({total_active}/{max_active})")
             return
 
-        while total_active < self.config.max_active_rd_downloads and tracker.stream_index < len(tracker.streams):
-            stream = tracker.streams[tracker.stream_index]
+        added_this_round = 0
 
-            # Create magnet link from infohash
-            magnet = f"magnet:?xt=urn:btih:{stream.infohash}"
+        # Keep trying to fill slots until we're at max or no more pending streams
+        while total_active < max_active:
+            # Get all trackers that have pending streams (regenerate each iteration to catch new ones)
+            pending_trackers = [
+                tracker for tracker in self.item_trackers.values()
+                if tracker.manual_scrape_started
+                and tracker.streams
+                and tracker.stream_index < len(tracker.streams)
+            ]
 
-            logger.info(f"Adding torrent {tracker.stream_index + 1}/{len(tracker.streams)} to RD: {stream.raw_title[:50]}...")
+            if not pending_trackers:
+                logger.debug("No trackers with pending streams")
+                break
 
-            try:
-                # Rate limiter is already applied in rd.add_magnet
-                result = await self.rd.add_magnet(magnet)
-                torrent_id = result.get("id")
+            logger.debug(f"Filling RD slots: {total_active}/{max_active} active, {len(pending_trackers)} items with pending streams")
 
-                if torrent_id:
-                    # Wait for RD to finish magnet conversion before selecting files
-                    if await self._wait_for_file_selection(torrent_id):
-                        # Select all files to start download
-                        await self.rd.select_files(torrent_id, "all")
+            # Use round-robin to fairly distribute across items
+            tracker = pending_trackers[self._rr_index % len(pending_trackers)]
+            self._rr_index = (self._rr_index + 1) % len(pending_trackers)
 
-                        # Create download tracker
-                        download = RDDownloadTracker(
-                            torrent_id=torrent_id,
-                            infohash=stream.infohash,
-                            item_tracker=tracker,
-                            stream_index=tracker.stream_index,
-                        )
-                        self.rd_downloads[torrent_id] = download
-                        # Persist the new download
-                        self.state.set_rd_download(torrent_id, download.to_dict())
+            if await self._try_add_one_stream(tracker):
+                total_active = len(self.rd_downloads)
+                added_this_round += 1
+                logger.info(f"Filled RD slot {total_active}/{max_active} from {tracker.item.display_name}")
 
-                        logger.info(f"Added torrent {torrent_id} to RD monitoring (active: {len(self.rd_downloads)}/{self.config.max_active_rd_downloads})")
-                        total_active = len(self.rd_downloads)
-                    else:
-                        # Failed during magnet conversion, delete and try next
-                        logger.warning(f"Torrent {torrent_id} failed during setup, trying next stream")
-                        await self.rd.delete_torrent(torrent_id)
-
-            except Exception as e:
-                logger.error(f"Failed to add torrent to RD: {e}")
-
-            tracker.stream_index += 1
-            # Persist stream_index progress
-            self.state.set_item_tracker(tracker.item_id, tracker.to_dict())
-
-            # Wait between adding torrents (rate limit + delay)
-            if tracker.stream_index < len(tracker.streams) and total_active < self.config.max_active_rd_downloads:
-                logger.info(f"Waiting {self.config.torrent_add_delay_seconds}s before next torrent...")
+            # Delay between adding torrents
+            if total_active < max_active:
                 await asyncio.sleep(self.config.torrent_add_delay_seconds)
+
+        if added_this_round > 0:
+            logger.info(f"Added {added_this_round} torrents to RD (now {len(self.rd_downloads)}/{max_active} active)")
+
+    async def _try_add_one_stream(self, tracker: ItemTracker) -> bool:
+        """Try to add the next stream from a tracker to RD.
+
+        Returns True if successfully added, False otherwise.
+        Always increments stream_index.
+        """
+        if tracker.stream_index >= len(tracker.streams):
+            return False
+
+        stream = tracker.streams[tracker.stream_index]
+        magnet = f"magnet:?xt=urn:btih:{stream.infohash}"
+        item_name = tracker.item.display_name if tracker.item else tracker.item_id
+
+        logger.info(f"[{item_name}] Adding torrent {tracker.stream_index + 1}/{len(tracker.streams)}: {stream.raw_title[:50]}...")
+
+        success = False
+        try:
+            result = await self.rd.add_magnet(magnet)
+            torrent_id = result.get("id")
+
+            if torrent_id:
+                if await self._wait_for_file_selection(torrent_id):
+                    await self.rd.select_files(torrent_id, "all")
+
+                    download = RDDownloadTracker(
+                        torrent_id=torrent_id,
+                        infohash=stream.infohash,
+                        item_tracker=tracker,
+                        stream_index=tracker.stream_index,
+                    )
+                    self.rd_downloads[torrent_id] = download
+                    self.state.set_rd_download(torrent_id, download.to_dict())
+
+                    logger.info(f"[{item_name}] Added torrent {torrent_id} (active: {len(self.rd_downloads)}/{self.config.max_active_rd_downloads})")
+                    success = True
+                else:
+                    logger.warning(f"[{item_name}] Torrent {torrent_id} failed during setup, will try next")
+                    await self.rd.delete_torrent(torrent_id)
+
+        except ContentInfringementError:
+            logger.warning(f"[{item_name}] Content flagged as infringing by Real-Debrid, skipping")
+
+        except Exception as e:
+            logger.error(f"[{item_name}] Failed to add torrent: {e}")
+
+        tracker.stream_index += 1
+        self.state.set_item_tracker(tracker.item_id, tracker.to_dict())
+
+        return success
+
+    async def _add_streams_to_rd(self, tracker: ItemTracker):
+        """Add streams from a tracker to RD. Wraps _fill_rd_slots for compatibility."""
+        # This is now just a trigger to fill slots globally
+        await self._fill_rd_slots()
 
     async def _monitor_rd_downloads(self):
         """Monitor active RD downloads and handle completion/failure."""
         if not self.rd_downloads:
             return
 
-        logger.debug(f"Monitoring {len(self.rd_downloads)} RD downloads...")
+        logger.info(f"Monitoring {len(self.rd_downloads)} RD downloads...")
 
         to_remove = []
         trackers_to_refill = []
@@ -713,21 +764,30 @@ class TRCMonitor:
                 download.last_check = datetime.now()
 
                 elapsed = (datetime.now() - download.started_at).total_seconds()
+                elapsed_mins = elapsed / 60
 
                 if torrent.is_complete:
-                    logger.info(f"✓ Torrent completed: {torrent.filename[:50]}")
-                    # Torrent is on RD, now remove+add item in Riven so it picks up the cached content
+                    logger.info(f"✓ Torrent completed after {elapsed_mins:.1f}m: {torrent.filename[:50]}")
                     item = download.item_tracker.item
-                    media_type = "movie" if item.type == "movie" else "show"
-
-                    # Remove and re-add to trigger Riven to find the now-cached content
-                    await self.riven.remove_item(item.id)
-                    await self.riven.add_item(tmdb_id=item.tmdb_id, tvdb_id=item.tvdb_id, media_type=media_type)
+                    
+                    # For items with valid Riven IDs (real items), try to remove/re-add
+                    # For pseudo-items (parent shows from episodes), just trigger manual scrape
+                    if item.id.startswith("tmdb:") or item.id.startswith("tvdb:"):
+                        # This is a pseudo-item (parent show), don't try to remove it
+                        logger.info(f"Torrent completed for pseudo-item (parent show), triggering manual scrape")
+                        # Will re-scrape on next check cycle
+                    else:
+                        # This is a real Riven item, try to remove and re-add
+                        media_type = "movie" if item.type == "movie" else "show"
+                        if await self.riven.remove_item(item.id):
+                            await self.riven.add_item(tmdb_id=item.tmdb_id, tvdb_id=item.tvdb_id, media_type=media_type)
+                            logger.info(f"Re-added {item.display_name} to Riven to pick up cached content")
+                        else:
+                            logger.warning(f"Failed to remove item {item.id}, will retry on next check")
 
                     to_remove.append(torrent_id)
                     self.processed_items.add(download.item_tracker.item_id)
                     self.state.add_processed_item(download.item_tracker.item_id)
-                    logger.info(f"Re-added {item.display_name} to Riven to pick up cached content")
 
                 elif torrent.is_failed:
                     # Immediate failure (magnet_error, error, virus)
@@ -746,15 +806,19 @@ class TRCMonitor:
                 elif elapsed > self.config.rd_max_wait_seconds:
                     if torrent.is_active and torrent.progress < 10:
                         # Stalled - very slow progress, delete and try next
-                        logger.warning(f"⚠ Torrent stalled (progress={torrent.progress}%): {torrent.filename[:50]}")
+                        logger.warning(f"⚠ Torrent stalled after {elapsed_mins:.1f}m (progress={torrent.progress}%): {torrent.filename[:50]}")
                         await self.rd.delete_torrent(torrent_id)
                         to_remove.append(torrent_id)
                         trackers_to_refill.append(download.item_tracker)
                     elif torrent.is_active:
                         # Still downloading with progress, let it continue
-                        logger.info(f"↓ Still downloading ({torrent.progress}%): {torrent.filename[:50]}")
+                        logger.info(f"↓ Still downloading after {elapsed_mins:.1f}m ({torrent.progress}%): {torrent.filename[:50]}")
                 else:
-                    logger.debug(f"⏳ Waiting ({torrent.status}, {torrent.progress}%): {torrent.filename[:50]}")
+                    # Actively downloading - show progress
+                    if torrent.is_active:
+                        logger.info(f"↓ Downloading ({torrent.progress}%, {elapsed_mins:.1f}m): {torrent.filename[:50]}")
+                    else:
+                        logger.info(f"⏳ Waiting ({torrent.status}, {torrent.progress}%): {torrent.filename[:50]}")
 
             except Exception as e:
                 logger.error(f"Error checking torrent {torrent_id}: {e}")
@@ -764,8 +828,7 @@ class TRCMonitor:
             del self.rd_downloads[torrent_id]
             self.state.remove_rd_download(torrent_id)
 
-        # Try to add more streams for trackers that had failures
-        for tracker in trackers_to_refill:
-            if tracker.stream_index < len(tracker.streams):
-                await self._add_streams_to_rd(tracker)
+        # If we removed any downloads, try to fill the slots from all pending trackers
+        if to_remove:
+            await self._fill_rd_slots()
 

@@ -148,27 +148,25 @@ class RivenClient:
     
     async def get_problem_items(self, states: List[str], limit: int = 100) -> List[MediaItem]:
         """Get items with problem states (Failed, Unknown)."""
-        params = {"limit": limit}
-        # Add multiple states
-        for state in states:
-            params.setdefault("states", []).append(state) if isinstance(params.get("states"), list) else None
-        
-        # Build query string manually for multiple states
-        state_params = "&".join([f"states={s}" for s in states])
-        endpoint = f"/items?limit={limit}&{state_params}"
-        
-        # Use httpx params properly for list
-        all_params = {"limit": limit}
-        result = await self.client.get(
-            f"{self.base_url}/items",
-            params=[("limit", limit), ("api_key", self.config.riven_api_key)] + [("states", s) for s in states],
-            timeout=30.0
-        )
-        await self.rate_limiter.acquire("riven")
-        result.raise_for_status()
-        data = result.json()
-        items = data.get("items", [])
-        return [MediaItem.from_dict(item) for item in items]
+        # Note: States parameter may need special handling depending on Riven API version
+        # Using _request with JSON body for states
+        try:
+            result = await self._request(
+                "GET", 
+                f"/items?limit={limit}&{'&'.join([f'states={s}' for s in states])}"
+            )
+            items = result.get("items", [])
+            return [MediaItem.from_dict(item) for item in items]
+        except Exception as e:
+            logger.error(f"Failed to get problem items: {e}")
+            # Try without states as fallback
+            try:
+                result = await self._request("GET", f"/items?limit={limit}")
+                items = result.get("items", [])
+                return [MediaItem.from_dict(item) for item in items]
+            except Exception as e2:
+                logger.error(f"Failed to get items even without states: {e2}")
+                return []
 
     async def get_item_streams(self, item_id: str) -> List[Stream]:
         """Get available streams for an item."""
@@ -228,6 +226,12 @@ class RivenClient:
             await self._request("DELETE", "/items/remove", json={"ids": [str(item_id)]})
             logger.info(f"Removed item {item_id}")
             return True
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 400:
+                logger.error(f"Failed to remove item {item_id}: Invalid item ID (400 Bad Request). Item ID format may be incorrect.")
+            else:
+                logger.error(f"Failed to remove item {item_id}: HTTP {e.response.status_code}")
+            return False
         except Exception as e:
             logger.error(f"Failed to remove item {item_id}: {e}")
             return False

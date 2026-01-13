@@ -13,6 +13,11 @@ from .rate_limiter import RateLimiterManager
 logger = logging.getLogger(__name__)
 
 
+class ContentInfringementError(Exception):
+    """Raised when content is flagged as infringing (HTTP 451)."""
+    pass
+
+
 class TorrentStatus(Enum):
     """Real-Debrid torrent statuses."""
     MAGNET_ERROR = "magnet_error"
@@ -122,6 +127,11 @@ class RealDebridClient:
         
         logger.debug(f"RD API: {method} {endpoint}")
         response = await self.client.request(method, url, headers=headers, **kwargs)
+        
+        # Handle content infringement (451)
+        if response.status_code == 451:
+            raise ContentInfringementError("Content flagged as infringing by Real-Debrid")
+        
         response.raise_for_status()
         
         if response.status_code == 204:

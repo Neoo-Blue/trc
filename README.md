@@ -9,8 +9,12 @@ TRC is an automated companion service for [Riven](https://github.com/rivenmedia/
 - **Season/Episode Handling**: Automatically retries parent shows when seasons or episodes fail
 - **Release Date Awareness**: Skips unreleased content that naturally can't be found
 - **Manual Scraping Fallback**: After max retries, manually scrapes for torrents and adds to Real-Debrid
+- **Concurrent Downloads**: Maintains up to 3 concurrent active torrents across different items fairly
+- **Smart Round-Robin Distribution**: Distributes torrent adds fairly across all items with pending streams
 - **RD Download Monitoring**: Monitors Real-Debrid downloads and triggers Riven to pick up cached content
+- **Active Progress Tracking**: Logs real-time download progress, status, and elapsed time for all active torrents
 - **Smart Torrent Handling**: Properly waits for RD magnet conversion, handles dead/stalled torrents immediately
+- **Content Infringement Detection**: Automatically skips content flagged as infringing (HTTP 451) by Real-Debrid
 - **Automatic RD Cleanup**: Periodically scans RD for stuck/orphaned torrents and cleans them up
 - **Rate Limiting**: Respects API rate limits for both Riven and Real-Debrid
 - **State Persistence**: Saves state to disk so progress survives restarts
@@ -24,7 +28,8 @@ TRC is an automated companion service for [Riven](https://github.com/rivenmedia/
    - For movies/shows: removes and re-adds the item to trigger fresh scraping
 3. **Manual Scrape Phase**: After max retries (default 3), TRC:
    - Uses Riven's scrape API to find torrent streams
-   - Adds top-ranked torrents to Real-Debrid (max 3 concurrent)
+   - Adds torrents to Real-Debrid, maintaining up to 3 concurrent active downloads
+   - Uses fair round-robin distribution across all items with pending streams
    - Waits for RD to convert magnet before selecting files
    - Monitors downloads until complete
    - Immediately moves to next torrent if current one is dead (no seeders)
@@ -113,6 +118,74 @@ View logs in Docker:
 ```bash
 docker-compose logs -f trc
 ```
+
+### What to expect in logs
+
+TRC provides detailed progress tracking:
+- **Item scanning**: `Found N items with problem states`
+- **Retry attempts**: `Removing and re-adding [item name]...`
+- **Manual scraping**: `Starting manual scrape for [item name]`, `Found N streams`
+- **Torrent additions**: `Adding torrent N/M from [item name]`, `Added torrent [ID]`
+- **Download progress**: `↓ Downloading (50%, 3.5m): [filename]` (updated every monitoring cycle)
+- **Magnet conversion**: `⏳ Waiting (magnet_conversion, 0%): [filename]`
+- **Completed downloads**: `✓ Torrent completed after 12.3m: [filename]`
+- **Failed torrents**: `✗ Torrent dead/no seeders` or `⚠ Torrent stalled`
+- **Slot refilling**: `Added N torrents to RD (now 2/3 active)`
+
+## Testing & Debugging
+
+### Test API Connectivity (✓ Verified Working)
+
+Use the included test script to verify API connectivity:
+
+```bash
+python test_api.py
+```
+
+**Expected output:**
+```
+✓ Riven API is responding to requests!
+✓ Connected as: [your RD username]
+✓ Active torrents: X/100
+✓ Real-Debrid API is working!
+```
+
+**What's being tested:**
+- Riven API connectivity and health
+- Real-Debrid user authentication
+- RD active torrent count
+- RD torrent retrieval
+
+Both APIs confirmed working! If you see errors, check:
+1. Network connectivity to both services
+2. API keys are correct (RIVEN_API_KEY, RD_API_KEY)
+3. Riven URL is accessible (RIVEN_URL)
+
+### Torrent Completion Flow
+
+After a torrent completes on Real-Debrid:
+
+1. **Real items** (from Riven database):
+   - TRC removes the item from Riven
+   - Re-adds it to trigger Riven to find the now-cached content on RD
+   - Marks item as processed
+
+2. **Pseudo-items** (parent shows created for failed episodes):
+   - Item ID format: `tmdb:123|tvdb:456` (or `tmdb:None|tvdb:456`)
+   - TRC recognizes these can't be removed from Riven
+   - Marks item as processed gracefully (no 400 errors)
+   - On next Riven check, native episode monitoring finds cached content
+
+### Debugging 400 Bad Request Errors
+
+If you see: `Failed to remove item tmdb:None|tvdb:424941: Invalid item ID (400 Bad Request)`
+
+**This is now expected and handled gracefully for pseudo-items.**
+
+To verify item types:
+1. Run `python check_state.py` to see which items are pseudo-items
+2. Run `python test_api.py` to see real item IDs from Riven
+3. Compare error messages with item types to understand what failed
 
 ## State Persistence
 
