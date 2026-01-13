@@ -424,11 +424,11 @@ class TRCMonitor:
             logger.error(f"Error enforcing max active torrents: {e}", exc_info=True)
 
     async def _check_problem_items(self):
-        """Check for and handle problem items."""
-        logger.info("Checking for problem items in Riven...")
+        """Check for and handle ONLY failed/unknown state items from Riven."""
+        logger.info(f"Checking for items with states: {self.config.problem_states}...")
 
         items = await self.riven.get_problem_items(self.config.problem_states, limit=200)
-        logger.info(f"Found {len(items)} items with problem states")
+        logger.info(f"Found {len(items)} items with {self.config.problem_states} states")
 
         # Track parent shows we've already queued for retry (to avoid duplicates)
         parent_shows_queued: Set[str] = set()
@@ -522,6 +522,16 @@ class TRCMonitor:
     async def _handle_problem_item(self, tracker: ItemTracker):
         """Handle a single problem item."""
         item = tracker.item
+        
+        # Validate item is still in a problem state
+        if item.state not in self.config.problem_states:
+            logger.debug(f"Item {item.display_name} state changed to {item.state}, skipping (no longer in problem states)")
+            # Remove from trackers since it's no longer a problem
+            if item.id in self.item_trackers:
+                del self.item_trackers[item.id]
+                self.state.remove_item_tracker(item.id)
+            return
+        
         logger.info(f"Handling: {item.display_name} (state={item.state}, retries={tracker.retry_count})")
 
         # If skip_riven_retry is enabled, go directly to manual scrape

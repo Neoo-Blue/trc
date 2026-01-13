@@ -149,7 +149,7 @@ class RivenClient:
     async def get_problem_items(self, states: List[str], limit: int = 100) -> List[MediaItem]:
         """Get items with problem states (Failed, Unknown)."""
         # Note: States parameter may need special handling depending on Riven API version
-        # Using _request with JSON body for states
+        # Using _request with query parameters for states
         try:
             result = await self._request(
                 "GET", 
@@ -158,12 +158,18 @@ class RivenClient:
             items = result.get("items", [])
             return [MediaItem.from_dict(item) for item in items]
         except Exception as e:
-            logger.error(f"Failed to get problem items: {e}")
-            # Try without states as fallback
+            logger.error(f"Failed to get problem items with state filter: {e}")
+            # Try without states as fallback, but filter locally by state
             try:
                 result = await self._request("GET", f"/items?limit={limit}")
-                items = result.get("items", [])
-                return [MediaItem.from_dict(item) for item in items]
+                all_items = result.get("items", [])
+                # Filter locally to only return items with the specified states
+                filtered_items = [
+                    MediaItem.from_dict(item) for item in all_items
+                    if item.get("state") in states
+                ]
+                logger.info(f"Fallback: Retrieved {len(all_items)} items, filtered to {len(filtered_items)} with states {states}")
+                return filtered_items
             except Exception as e2:
                 logger.error(f"Failed to get items even without states: {e2}")
                 return []
