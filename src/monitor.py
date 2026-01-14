@@ -826,14 +826,31 @@ class TRCMonitor:
                     media_type = "movie" if (item.type == "movie") else "show"
 
                     try:
-                        streams = await self.riven.scrape_item(
-                            tmdb_id=scrape_tmdb,
-                            tvdb_id=scrape_tvdb,
-                            imdb_id=item.imdb_id,
-                            media_type=media_type,
-                        )
+                        # Retry scrape on timeout (2 attempts with 2-second delay)
+                        streams = None
+                        for attempt in range(2):
+                            try:
+                                streams = await self.riven.scrape_item(
+                                    tmdb_id=scrape_tmdb,
+                                    tvdb_id=scrape_tvdb,
+                                    imdb_id=item.imdb_id,
+                                    media_type=media_type,
+                                )
+                                break  # Success, exit retry loop
+                            except Exception as scrape_e:
+                                if "Timeout" in str(type(scrape_e).__name__) and attempt == 0:
+                                    # Timeout on first attempt - retry
+                                    logger.debug(f"Scrape timeout for '{item.display_name}', retrying... (attempt 2/2)")
+                                    await asyncio.sleep(2)
+                                    continue
+                                else:
+                                    # Not a timeout or already on second attempt - re-raise
+                                    raise scrape_e
 
-                        # streams is a dict of id->Stream
+                        # If both retries failed, streams is None - handle gracefully
+                        if streams is None:
+                            logger.warning(f"Failed to scrape '{item.display_name}' after 2 attempts. Will trigger add/retry as fallback.")
+                            streams = {}
                         found_match = any(s.infohash.lower() == completed_infohash.lower() for s in streams.values())
 
                         if found_match:
