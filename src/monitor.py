@@ -809,11 +809,19 @@ class TRCMonitor:
 
                     completed_infohash = download.infohash
 
-                    # Determine scrape identifiers: for episodes/seasons use parent IDs
+                    # For scraping, use parent IDs for episodes/seasons to get the full show's streams
+                    # For applying, use the specific item's IDs (child's own IDs)
                     scrape_tmdb, scrape_tvdb = (item.tmdb_id, item.tvdb_id)
+                    apply_tmdb, apply_tvdb = (item.tmdb_id, item.tvdb_id)
+                    apply_imdb = item.imdb_id
+                    
                     if item.type in ("episode", "season") and item.parent_ids:
+                        # Use parent IDs for scraping to get all streams
                         scrape_tmdb = item.parent_ids.tmdb_id
                         scrape_tvdb = item.parent_ids.tvdb_id
+                        # But apply to the specific child item using its own IDs
+                        apply_tmdb = item.tmdb_id
+                        apply_tvdb = item.tvdb_id
 
                     media_type = "movie" if (item.type == "movie") else "show"
 
@@ -833,7 +841,8 @@ class TRCMonitor:
                             # If this is a real item id, try remove then add so Riven re-processes it
                             if not (item.id.startswith("tmdb:") or item.id.startswith("tvdb:")):
                                 if await self.riven.remove_item(item.id):
-                                    await self.riven.add_item(tmdb_id=item.tmdb_id, tvdb_id=item.tvdb_id, media_type=media_type)
+                                    # Apply to the specific item (child's own IDs, not parent)
+                                    await self.riven.add_item(tmdb_id=apply_tmdb, tvdb_id=apply_tvdb, media_type=media_type)
                                     # Trigger retry to immediately scan for streams
                                     if await self.riven.retry_item(item.id):
                                         logger.info(f"Re-applied completed torrent to {item.display_name} in Riven and triggered retry scan.")
@@ -841,24 +850,23 @@ class TRCMonitor:
                                         logger.warning(f"Failed to trigger retry scan for {item.display_name}")
                                 else:
                                     logger.warning(f"Failed to remove real item {item.id} before re-adding; will still try add")
-                                    await self.riven.add_item(tmdb_id=item.tmdb_id, tvdb_id=item.tvdb_id, media_type=media_type)
+                                    await self.riven.add_item(tmdb_id=apply_tmdb, tvdb_id=apply_tvdb, media_type=media_type)
                                     # Try retry as fallback
                                     if await self.riven.retry_item(item.id):
                                         logger.info(f"Triggered retry scan for {item.display_name}")
                             else:
-                                # pseudo-item: just add to trigger a scan on parent show
-                                await self.riven.add_item(tmdb_id=scrape_tmdb, tvdb_id=scrape_tvdb, media_type=media_type)
-                                # Find the parent item and retry it to scan
-                                parent_item = await self.riven.get_item_by_ids(tmdb_id=scrape_tmdb, tvdb_id=scrape_tvdb)
-                                if parent_item:
-                                    if await self.riven.retry_item(parent_item.id):
-                                        logger.info(f"Triggered retry scan for parent '{item.display_name}'.")
+                                # pseudo-item: add the specific item using its own IDs
+                                await self.riven.add_item(tmdb_id=apply_tmdb, tvdb_id=apply_tvdb, media_type=media_type)
+                                # Try to find and retry the specific item
+                                found_item = await self.riven.get_item_by_ids(tmdb_id=apply_tmdb, tvdb_id=apply_tvdb)
+                                if found_item:
+                                    if await self.riven.retry_item(found_item.id):
+                                        logger.info(f"Triggered retry scan for specific item '{item.display_name}'.")
                                     else:
-                                        logger.debug(f"Could not trigger retry for parent {scrape_tmdb}/{scrape_tvdb}")
+                                        logger.debug(f"Could not trigger retry for {apply_tmdb}/{apply_tvdb}")
                                 else:
                                     # Item not found in problem items - likely hasn't been scanned yet
-                                    # Log for info but don't fail - Riven will scan it on next cycle
-                                    logger.debug(f"Parent item {scrape_tmdb}/{scrape_tvdb} not in problem items yet (may be in Available/Unavailable state)")
+                                    logger.debug(f"Item {apply_tmdb}/{apply_tvdb} not in problem items yet (may be in Available/Unavailable state)")
 
                         else:
                             logger.info(f"Completed torrent not found in scrape results for '{item.display_name}'. Triggering Riven add and retry as fallback.")
