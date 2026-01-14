@@ -853,8 +853,12 @@ class TRCMonitor:
                                 if parent_item:
                                     if await self.riven.retry_item(parent_item.id):
                                         logger.info(f"Triggered retry scan for parent '{item.display_name}'.")
+                                    else:
+                                        logger.debug(f"Could not trigger retry for parent {scrape_tmdb}/{scrape_tvdb}")
                                 else:
-                                    logger.warning(f"Could not find parent item for {item.display_name} to trigger retry")
+                                    # Item not found in problem items - likely hasn't been scanned yet
+                                    # Log for info but don't fail - Riven will scan it on next cycle
+                                    logger.debug(f"Parent item {scrape_tmdb}/{scrape_tvdb} not in problem items yet (may be in Available/Unavailable state)")
 
                         else:
                             logger.info(f"Completed torrent not found in scrape results for '{item.display_name}'. Triggering Riven add and retry as fallback.")
@@ -864,8 +868,11 @@ class TRCMonitor:
                             if found_item:
                                 if await self.riven.retry_item(found_item.id):
                                     logger.info(f"Triggered retry scan for {found_item.display_name}")
+                                else:
+                                    logger.debug(f"Could not trigger retry for {found_item.display_name}")
                             else:
-                                logger.warning(f"Could not find item {scrape_tmdb}/{scrape_tvdb} to trigger retry")
+                                # Item not found in problem items - may be in other state
+                                logger.debug(f"Item {scrape_tmdb}/{scrape_tvdb} not in problem items yet (may be Available/Unavailable)")
 
                     except Exception as e:
                         logger.error(f"Error during scrape/add for '{item.display_name}': {e}", exc_info=True)
