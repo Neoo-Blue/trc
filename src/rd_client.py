@@ -204,10 +204,14 @@ class RealDebridClient:
             return False
     
     async def delete_torrent(self, torrent_id: str) -> bool:
-        """Delete a torrent."""
+        """Delete a torrent. Returns True if deleted successfully or already gone (404)."""
         try:
             await self._request("DELETE", f"/torrents/delete/{torrent_id}")
             logger.info(f"Deleted RD torrent {torrent_id}")
+            return True
+        except TorrentNotFoundError:
+            # Torrent already deleted or doesn't exist - this is fine
+            logger.debug(f"Torrent {torrent_id} not found on RD (already deleted or never existed)")
             return True
         except Exception as e:
             logger.error(f"Failed to delete torrent {torrent_id}: {e}")

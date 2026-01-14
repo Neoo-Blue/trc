@@ -925,8 +925,9 @@ class TRCMonitor:
 
         # Remove completed/failed downloads from tracking and persistence
         for torrent_id in to_remove:
-            del self.rd_downloads[torrent_id]
-            self.state.remove_rd_download(torrent_id)
+            if torrent_id in self.rd_downloads:
+                del self.rd_downloads[torrent_id]
+                self.state.remove_rd_download(torrent_id)
 
         # If we removed any downloads, try to fill the slots from all pending trackers
         if to_remove:
