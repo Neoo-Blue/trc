@@ -868,7 +868,7 @@ class TRCMonitor:
                                 logger.warning(f"Could not find item {scrape_tmdb}/{scrape_tvdb} to trigger retry")
 
                     except Exception as e:
-                        logger.error(f"Error during scrape/add for '{item.display_name}': {e}")
+                        logger.error(f"Error during scrape/add for '{item.display_name}': {e}", exc_info=True)
 
                     to_remove.append(torrent_id)
                     self.processed_items.add(download.item_tracker.item_id)
