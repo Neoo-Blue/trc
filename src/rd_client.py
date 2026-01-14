@@ -195,10 +195,17 @@ class RealDebridClient:
         return result
     
     async def select_files(self, torrent_id: str, files: str = "all") -> bool:
-        """Select files to download. Use 'all' or comma-separated file IDs."""
+        """Select files to download. Use 'all' or comma-separated file IDs.
+        
+        Returns True if files selected successfully or torrent no longer exists (already deleted/failed).
+        """
         try:
             await self._request("POST", f"/torrents/selectFiles/{torrent_id}", data={"files": files})
             return True
+        except TorrentNotFoundError:
+            # Torrent was deleted before file selection - likely failed/stalled
+            logger.debug(f"Torrent {torrent_id} no longer exists (was likely deleted or failed)")
+            return False
         except Exception as e:
             logger.error(f"Failed to select files for torrent {torrent_id}: {e}")
             return False

@@ -741,19 +741,23 @@ class TRCMonitor:
 
             if torrent_id:
                 if await self._wait_for_file_selection(torrent_id):
-                    await self.rd.select_files(torrent_id, "all")
+                    files_selected = await self.rd.select_files(torrent_id, "all")
+                    
+                    if files_selected:
+                        download = RDDownloadTracker(
+                            torrent_id=torrent_id,
+                            infohash=stream.infohash,
+                            item_tracker=tracker,
+                            stream_index=tracker.stream_index,
+                        )
+                        self.rd_downloads[torrent_id] = download
+                        self.state.set_rd_download(torrent_id, download.to_dict())
 
-                    download = RDDownloadTracker(
-                        torrent_id=torrent_id,
-                        infohash=stream.infohash,
-                        item_tracker=tracker,
-                        stream_index=tracker.stream_index,
-                    )
-                    self.rd_downloads[torrent_id] = download
-                    self.state.set_rd_download(torrent_id, download.to_dict())
-
-                    logger.info(f"[{item_name}] Added torrent {torrent_id} (active: {len(self.rd_downloads)}/{self.config.max_active_rd_downloads})")
-                    success = True
+                        logger.info(f"[{item_name}] Added torrent {torrent_id} (active: {len(self.rd_downloads)}/{self.config.max_active_rd_downloads})")
+                        success = True
+                    else:
+                        logger.warning(f"[{item_name}] Failed to select files for {torrent_id}, will try next")
+                        await self.rd.delete_torrent(torrent_id)
                 else:
                     logger.warning(f"[{item_name}] Torrent {torrent_id} failed during setup, will try next")
                     await self.rd.delete_torrent(torrent_id)
