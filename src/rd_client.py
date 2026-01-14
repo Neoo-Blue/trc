@@ -99,7 +99,13 @@ class RDTorrent:
 
     @property
     def is_stalled(self) -> bool:
-        return TorrentStatus.is_stalled(self.status)
+        """Check if torrent is stalled/dead (status is DEAD or no seeders while downloading)."""
+        if TorrentStatus.is_stalled(self.status):
+            return True
+        # Also consider it stalled if actively downloading but has 0 seeders
+        if self.is_active and self.seeders is not None and self.seeders == 0:
+            return True
+        return False
 
     @property
     def is_waiting_selection(self) -> bool:
@@ -112,6 +118,20 @@ class RDTorrent:
     @property
     def is_complete(self) -> bool:
         return TorrentStatus.is_complete(self.status)
+    
+    @property
+    def seeders_status(self) -> str:
+        """Get a human-readable seeder status."""
+        if self.seeders is None:
+            return "unknown"
+        elif self.seeders == 0:
+            return "dead (0 seeders)"
+        elif self.seeders < 5:
+            return f"low ({self.seeders} seeders)"
+        elif self.seeders < 20:
+            return f"medium ({self.seeders} seeders)"
+        else:
+            return f"high ({self.seeders}+ seeders)"
 
 
 class RealDebridClient:

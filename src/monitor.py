@@ -879,7 +879,7 @@ class TRCMonitor:
 
                 elif torrent.is_stalled:
                     # Dead torrent - no seeders available, try next immediately
-                    logger.warning(f"✗ Torrent dead/no seeders ({torrent.status}): {torrent.filename[:50]}")
+                    logger.warning(f"✗ Torrent dead ({torrent.seeders_status}): {torrent.filename[:50]}")
                     await self.rd.delete_torrent(torrent_id)
                     to_remove.append(torrent_id)
                     trackers_to_refill.append(download.item_tracker)
@@ -895,9 +895,10 @@ class TRCMonitor:
                         # Still downloading with progress, let it continue
                         logger.info(f"↓ Still downloading after {elapsed_mins:.1f}m ({torrent.progress}%): {torrent.filename[:50]}")
                 else:
-                    # Actively downloading - show progress
+                    # Actively downloading - show progress with seeder info
                     if torrent.is_active:
-                        logger.info(f"↓ Downloading ({torrent.progress}%, {elapsed_mins:.1f}m): {torrent.filename[:50]}")
+                        seeder_info = f" | Seeders: {torrent.seeders_status}" if torrent.seeders is not None else ""
+                        logger.info(f"↓ Downloading ({torrent.progress}%, {elapsed_mins:.1f}m{seeder_info}): {torrent.filename[:50]}")
                     else:
                         logger.info(f"⏳ Waiting ({torrent.status}, {torrent.progress}%): {torrent.filename[:50]}")
 
