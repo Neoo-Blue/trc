@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from .config import Config
 from .riven_client import RivenClient, MediaItem, Stream
-from .rd_client import RealDebridClient, RDTorrent, ContentInfringementError
+from .rd_client import RealDebridClient, RDTorrent, ContentInfringementError, TorrentNotFoundError
 from .persistence import StateManager
 
 logger = logging.getLogger(__name__)
@@ -382,8 +382,24 @@ class TRCMonitor:
         max_active = self.config.max_active_rd_downloads
 
         try:
-            # Get fresh list of all torrents
-            all_torrents = await self.rd.get_torrents(limit=100)
+            # Get fresh list of all torrents - retry on connection errors
+            max_retries = 2
+            all_torrents = None
+            
+            for attempt in range(max_retries):
+                try:
+                    all_torrents = await self.rd.get_torrents(limit=100)
+                    break
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Failed to get torrents (attempt {attempt + 1}/{max_retries}): {e}. Retrying...")
+                        await asyncio.sleep(2)
+                    else:
+                        raise
+
+            if not all_torrents:
+                logger.debug("No torrents found or unable to retrieve torrent list")
+                return
 
             # Filter to only active torrents (downloading, queued, etc.)
             active_torrents = [t for t in all_torrents if t.is_active]
@@ -779,21 +795,76 @@ class TRCMonitor:
                 if torrent.is_complete:
                     logger.info(f"✓ Torrent completed after {elapsed_mins:.1f}m: {torrent.filename[:50]}")
                     item = download.item_tracker.item
-                    
-                    # For items with valid Riven IDs (real items), try to remove/re-add
-                    # For pseudo-items (parent shows from episodes), just trigger manual scrape
-                    if item.id.startswith("tmdb:") or item.id.startswith("tvdb:"):
-                        # This is a pseudo-item (parent show), don't try to remove it
-                        logger.info(f"Torrent completed for pseudo-item (parent show), triggering manual scrape")
-                        # Will re-scrape on next check cycle
-                    else:
-                        # This is a real Riven item, try to remove and re-add
-                        media_type = "movie" if item.type == "movie" else "show"
-                        if await self.riven.remove_item(item.id):
-                            await self.riven.add_item(tmdb_id=item.tmdb_id, tvdb_id=item.tvdb_id, media_type=media_type)
-                            logger.info(f"Re-added {item.display_name} to Riven to pick up cached content")
+
+                    # Always attempt to ensure Riven sees the completed stream.
+                    # Strategy:
+                    # 1) Run a manual scrape for the item (use parent IDs for episodes/seasons)
+                    # 2) If the scrape finds a stream matching the completed infohash, trigger add_item
+                    #    (and remove existing item first if it's a real Riven item id)
+                    # 3) If not found, still trigger an add_item as a fallback to force a scan.
+
+                    completed_infohash = download.infohash
+
+                    # Determine scrape identifiers: for episodes/seasons use parent IDs
+                    scrape_tmdb, scrape_tvdb = (item.tmdb_id, item.tvdb_id)
+                    if item.type in ("episode", "season") and item.parent_ids:
+                        scrape_tmdb = item.parent_ids.tmdb_id
+                        scrape_tvdb = item.parent_ids.tvdb_id
+
+                    media_type = "movie" if (item.type == "movie") else "show"
+
+                    try:
+                        streams = await self.riven.scrape_item(
+                            tmdb_id=scrape_tmdb,
+                            tvdb_id=scrape_tvdb,
+                            imdb_id=item.imdb_id,
+                            media_type=media_type,
+                        )
+
+                        # streams is a dict of id->Stream
+                        found_match = any(s.infohash.lower() == completed_infohash.lower() for s in streams.values())
+
+                        if found_match:
+                            logger.info(f"Completed torrent matched scraped stream for '{item.display_name}'. Applying to Riven.")
+                            # If this is a real item id, try remove then add so Riven re-processes it
+                            if not (item.id.startswith("tmdb:") or item.id.startswith("tvdb:")):
+                                if await self.riven.remove_item(item.id):
+                                    await self.riven.add_item(tmdb_id=item.tmdb_id, tvdb_id=item.tvdb_id, media_type=media_type)
+                                    # Trigger retry to immediately scan for streams
+                                    if await self.riven.retry_item(item.id):
+                                        logger.info(f"Re-applied completed torrent to {item.display_name} in Riven and triggered retry scan.")
+                                    else:
+                                        logger.warning(f"Failed to trigger retry scan for {item.display_name}")
+                                else:
+                                    logger.warning(f"Failed to remove real item {item.id} before re-adding; will still try add")
+                                    await self.riven.add_item(tmdb_id=item.tmdb_id, tvdb_id=item.tvdb_id, media_type=media_type)
+                                    # Try retry as fallback
+                                    if await self.riven.retry_item(item.id):
+                                        logger.info(f"Triggered retry scan for {item.display_name}")
+                            else:
+                                # pseudo-item: just add to trigger a scan on parent show
+                                await self.riven.add_item(tmdb_id=scrape_tmdb, tvdb_id=scrape_tvdb, media_type=media_type)
+                                # Find the parent item and retry it to scan
+                                parent_item = await self.riven.get_item_by_ids(tmdb_id=scrape_tmdb, tvdb_id=scrape_tvdb)
+                                if parent_item:
+                                    if await self.riven.retry_item(parent_item.id):
+                                        logger.info(f"Triggered retry scan for parent '{item.display_name}'.")
+                                else:
+                                    logger.warning(f"Could not find parent item for {item.display_name} to trigger retry")
+
                         else:
-                            logger.warning(f"Failed to remove item {item.id}, will retry on next check")
+                            logger.info(f"Completed torrent not found in scrape results for '{item.display_name}'. Triggering Riven add and retry as fallback.")
+                            await self.riven.add_item(tmdb_id=scrape_tmdb, tvdb_id=scrape_tvdb, media_type=media_type)
+                            # Find the item and trigger retry to scan for any available content
+                            found_item = await self.riven.get_item_by_ids(tmdb_id=scrape_tmdb, tvdb_id=scrape_tvdb)
+                            if found_item:
+                                if await self.riven.retry_item(found_item.id):
+                                    logger.info(f"Triggered retry scan for {found_item.display_name}")
+                            else:
+                                logger.warning(f"Could not find item {scrape_tmdb}/{scrape_tvdb} to trigger retry")
+
+                    except Exception as e:
+                        logger.error(f"Error during scrape/add for '{item.display_name}': {e}")
 
                     to_remove.append(torrent_id)
                     self.processed_items.add(download.item_tracker.item_id)
@@ -829,6 +900,24 @@ class TRCMonitor:
                         logger.info(f"↓ Downloading ({torrent.progress}%, {elapsed_mins:.1f}m): {torrent.filename[:50]}")
                     else:
                         logger.info(f"⏳ Waiting ({torrent.status}, {torrent.progress}%): {torrent.filename[:50]}")
+
+            except TorrentNotFoundError:
+                # Torrent was manually deleted from RD - validate and remove from tracking
+                try:
+                    # Verify deletion by checking active count
+                    active_info = await self.rd.get_active_count()
+                    active_count = active_info.get("active", 0)
+                    
+                    logger.warning(
+                        f"Torrent {torrent_id} not found on RD (likely manually deleted). "
+                        f"Current active torrents: {active_count}. Removing from tracking."
+                    )
+                except Exception as e:
+                    logger.debug(f"Could not validate active count for deleted torrent {torrent_id}: {e}")
+                    logger.warning(f"Torrent {torrent_id} not found on RD (manually deleted). Removing from tracking.")
+                
+                to_remove.append(torrent_id)
+                trackers_to_refill.append(download.item_tracker)
 
             except Exception as e:
                 logger.error(f"Error checking torrent {torrent_id}: {e}")

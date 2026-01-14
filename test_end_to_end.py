@@ -17,10 +17,10 @@ async def test_end_to_end():
     print("END-TO-END TEST: Scrape → Select Best Stream → Add to RD")
     print("=" * 70)
     
-    # Movie to test
+    # Movie to test (Black Panther: Wakanda Forever - real TMDB ID)
     test_movie = {
-        "name": "Sample Movie",
-        "tmdb_id": "123456",
+        "name": "Black Panther: Wakanda Forever",
+        "tmdb_id": "505642",
         "media_type": "movie"
     }
     

@@ -10,11 +10,18 @@ import httpx
 from .config import Config
 from .rate_limiter import RateLimiterManager
 
+__all__ = ['RealDebridClient', 'RDTorrent', 'TorrentStatus', 'ContentInfringementError', 'TorrentNotFoundError']
+
 logger = logging.getLogger(__name__)
 
 
 class ContentInfringementError(Exception):
     """Raised when content is flagged as infringing (HTTP 451)."""
+    pass
+
+
+class TorrentNotFoundError(Exception):
+    """Raised when a torrent is not found (HTTP 404)."""
     pass
 
 
@@ -127,6 +134,10 @@ class RealDebridClient:
         
         logger.debug(f"RD API: {method} {endpoint}")
         response = await self.client.request(method, url, headers=headers, **kwargs)
+        
+        # Handle not found (404) - torrent was likely manually deleted
+        if response.status_code == 404:
+            raise TorrentNotFoundError(f"Resource not found: {endpoint}")
         
         # Handle content infringement (451)
         if response.status_code == 451:

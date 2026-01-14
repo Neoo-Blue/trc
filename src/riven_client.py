@@ -250,6 +250,9 @@ class RivenClient:
             tmdb_id: TMDB ID for the item
             tvdb_id: TVDB ID for the item (for TV shows)
             media_type: Either 'movie' or 'show' (will be converted to 'tv' for API)
+        
+        Returns:
+            True if item was added successfully, False otherwise
         """
         try:
             # Riven expects 'movie' or 'tv' as media_type
@@ -268,6 +271,31 @@ class RivenClient:
         except Exception as e:
             logger.error(f"Failed to add item: {e}")
             return False
+
+    async def get_item_by_ids(self, tmdb_id: Optional[str] = None, 
+                             tvdb_id: Optional[str] = None) -> Optional[MediaItem]:
+        """Get an item by its TMDB or TVDB ID.
+        
+        Args:
+            tmdb_id: TMDB ID to search for
+            tvdb_id: TVDB ID to search for
+        
+        Returns:
+            MediaItem if found, None otherwise
+        """
+        try:
+            items = await self.get_problem_items(["Failed", "Unknown"], limit=100)
+            
+            for item in items:
+                if tmdb_id and str(item.tmdb_id) == str(tmdb_id):
+                    return item
+                if tvdb_id and str(item.tvdb_id) == str(tvdb_id):
+                    return item
+            
+            return None
+        except Exception as e:
+            logger.error(f"Failed to get item by IDs: {e}")
+            return None
 
     async def close(self):
         """Close the HTTP client."""
