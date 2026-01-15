@@ -900,7 +900,14 @@ class TRCMonitor:
                                 logger.debug(f"Item {scrape_tmdb}/{scrape_tvdb} not in problem items yet (may be Available/Unavailable)")
 
                     except Exception as e:
-                        logger.error(f"Error during scrape/add for '{item.display_name}': {e}", exc_info=True)
+                        # Handle different error types gracefully
+                        error_type = type(e).__name__
+                        if "Timeout" in error_type:
+                            # Timeout errors are expected for API issues - log as warning, not error
+                            logger.warning(f"Scrape timeout for '{item.display_name}' after 2 attempts. Will trigger add/retry as fallback.")
+                        else:
+                            # Other errors - log full traceback for debugging
+                            logger.error(f"Error during scrape/add for '{item.display_name}': {e}", exc_info=True)
 
                     to_remove.append(torrent_id)
                     self.processed_items.add(download.item_tracker.item_id)
